@@ -24,8 +24,12 @@ search_engine = get_search_engine()
 if "chat_history" not in st.session_state:
     st.session_state.chat_history = []
 
-# Sidebar for file upload
+# Sidebar for information and file upload
 with st.sidebar:
+    st.title("⚙️ System Status")
+    st.info(f"**LLM Model:** `{search_engine.llm_model}`\n\n**Embed Model:** `{search_engine.embed_model}`")
+    st.divider()
+    
     st.header("📁 Document Ingestion")
     uploaded_files = st.file_uploader("Upload Documents (PDF, DOCX, XLSX, CSV)", accept_multiple_files=True)
     
