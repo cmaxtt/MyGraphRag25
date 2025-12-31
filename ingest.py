@@ -20,17 +20,21 @@ class Ingestor:
         doc = result.document
         chunks = list(self.chunker.chunk(doc))
         
-        for i, chunk in enumerate(chunks):
-            text = chunk.text
-            print(f"  Processing chunk {i+1}/{len(chunks)}...")
-            
-            # 1. Store in Vector DB (PostgreSQL)
-            embedding = self.get_embedding(text)
-            self.store_vector(text, embedding, {"source": file_path, "chunk_id": i})
-            
-            # 2. Extract Triplets and Store in Graph DB (Neo4j)
-            triplets = self.extract_triplets(text)
-            self.store_graph(triplets)
+        from concurrent.futures import ThreadPoolExecutor
+        
+        print(f"  Ingesting {len(chunks)} chunks in parallel...")
+        with ThreadPoolExecutor(max_workers=4) as executor:
+            list(executor.map(lambda x: self._process_chunk(x[1], x[0], file_path), enumerate(chunks)))
+
+    def _process_chunk(self, chunk, index, file_path):
+        text = chunk.text
+        # 1. Store in Vector DB (PostgreSQL)
+        embedding = self.get_embedding(text)
+        self.store_vector(text, embedding, {"source": file_path, "chunk_id": index})
+        
+        # 2. Extract Triplets and Store in Graph DB (Neo4j)
+        triplets = self.extract_triplets(text)
+        self.store_graph(triplets)
 
     def get_embedding(self, text: str) -> List[float]:
         response = ollama.embeddings(model=self.embed_model, prompt=text)
@@ -58,11 +62,16 @@ class Ingestor:
 
     def store_vector(self, text: str, embedding: List[float], metadata: Dict):
         conn = self.db.connect_pg()
-        with conn.cursor() as cur:
-            cur.execute(
-                "INSERT INTO chunks (content, metadata, embedding) VALUES (%s, %s, %s)",
-                (text, json.dumps(metadata), embedding)
-            )
+        if not conn: return
+        try:
+            conn.autocommit = True
+            with conn.cursor() as cur:
+                cur.execute(
+                    "INSERT INTO chunks (content, metadata, embedding) VALUES (%s, %s, %s)",
+                    (text, json.dumps(metadata), embedding)
+                )
+        finally:
+            self.db.release_pg(conn)
 
     def store_graph(self, triplets: List[Dict]):
         driver = self.db.connect_neo4j()

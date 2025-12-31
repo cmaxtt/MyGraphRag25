@@ -1,5 +1,6 @@
 import os
 import psycopg2
+from psycopg2 import pool
 from neo4j import GraphDatabase
 from dotenv import load_dotenv
 import time
@@ -19,37 +20,44 @@ NEO4J_USER = os.getenv("NEO4J_USER", "neo4j")
 NEO4J_PWD = os.getenv("NEO4J_PWD", "password")
 
 class Database:
-    def __init__(self):
-        self.pg_conn = None
-        self.neo4j_driver = None
+    _pg_pool = None
 
-    def connect_pg(self):
-        retries = 5
-        while retries > 0:
+    def __init__(self):
+        self.neo4j_driver = None
+        self._init_pg_pool()
+
+    def _init_pg_pool(self):
+        if Database._pg_pool is None:
             try:
-                self.pg_conn = psycopg2.connect(
+                Database._pg_pool = pool.SimpleConnectionPool(
+                    1, 10,
                     host=PG_HOST,
                     port=PG_PORT,
                     user=PG_USER,
                     password=PG_PWD,
                     dbname=PG_DB
                 )
-                self.pg_conn.autocommit = True
-                print("Connected to PostgreSQL")
-                return self.pg_conn
+                print("PostgreSQL connection pool initialized")
             except Exception as e:
-                print(f"Error connecting to PostgreSQL: {e}. Retrying...")
-                time.sleep(2)
-                retries -= 1
-        raise Exception("Failed to connect to PostgreSQL")
+                print(f"Error initializing PG pool: {e}")
+
+    def connect_pg(self):
+        if Database._pg_pool:
+            return Database._pg_pool.getconn()
+        return None
+
+    def release_pg(self, conn):
+        if Database._pg_pool and conn:
+            Database._pg_pool.putconn(conn)
 
     def connect_neo4j(self):
         retries = 5
         while retries > 0:
             try:
-                self.neo4j_driver = GraphDatabase.driver(NEO4J_URI, auth=(NEO4J_USER, NEO4J_PWD))
-                self.neo4j_driver.verify_connectivity()
-                print("Connected to Neo4j")
+                if self.neo4j_driver is None:
+                    self.neo4j_driver = GraphDatabase.driver(NEO4J_URI, auth=(NEO4J_USER, NEO4J_PWD))
+                    self.neo4j_driver.verify_connectivity()
+                    print("Connected to Neo4j")
                 return self.neo4j_driver
             except Exception as e:
                 print(f"Error connecting to Neo4j: {e}. Retrying...")
@@ -60,16 +68,21 @@ class Database:
     def init_db(self):
         # Initialize PostgreSQL
         conn = self.connect_pg()
-        with conn.cursor() as cur:
-            cur.execute("CREATE EXTENSION IF NOT EXISTS vector;")
-            cur.execute("""
-                CREATE TABLE IF NOT EXISTS chunks (
-                    id SERIAL PRIMARY KEY,
-                    content TEXT,
-                    metadata JSONB,
-                    embedding vector(768)
-                );
-            """)
+        if conn:
+            try:
+                conn.autocommit = True
+                with conn.cursor() as cur:
+                    cur.execute("CREATE EXTENSION IF NOT EXISTS vector;")
+                    cur.execute("""
+                        CREATE TABLE IF NOT EXISTS chunks (
+                            id SERIAL PRIMARY KEY,
+                            content TEXT,
+                            metadata JSONB,
+                            embedding vector(768)
+                        );
+                    """)
+            finally:
+                self.release_pg(conn)
         
         # Initialize Neo4j constraints
         driver = self.connect_neo4j()

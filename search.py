@@ -45,14 +45,18 @@ class SearchEngine:
 
     def vector_search(self, embedding: List[float], top_k: int) -> List[str]:
         conn = self.db.connect_pg()
-        with conn.cursor() as cur:
-            cur.execute("""
-                SELECT content FROM chunks 
-                ORDER BY embedding <=> %s::vector 
-                LIMIT %s
-            """, (embedding, top_k))
-            rows = cur.fetchall()
-            return [row[0] for row in rows]
+        if not conn: return []
+        try:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    SELECT content FROM chunks 
+                    ORDER BY embedding <=> %s::vector 
+                    LIMIT %s
+                """, (embedding, top_k))
+                rows = cur.fetchall()
+                return [row[0] for row in rows]
+        finally:
+            self.db.release_pg(conn)
 
     def extract_entities(self, query: str) -> List[str]:
         prompt = f"Extract key entities (nouns) from this query. Return as a comma-separated list: {query}"
@@ -65,10 +69,13 @@ class SearchEngine:
         results = []
         with driver.session() as session:
             for entity in entities:
+                # 2-hop traversal to find deeper context and relationships
+                # Using toLower for better matching flexibility
                 query = """
-                MATCH (e:Entity {name: $name})-[r]->(neighbor)
-                RETURN e.name as s, type(r) as p, neighbor.name as o
-                LIMIT 5
+                MATCH (e:Entity)-[r*1..2]-(neighbor)
+                WHERE toLower(e.name) CONTAINS toLower($name)
+                RETURN DISTINCT e.name as s, type(r[0]) as p, neighbor.name as o
+                LIMIT 15
                 """
                 res = session.run(query, name=entity)
                 for record in res:
