@@ -59,23 +59,28 @@ class SearchEngine:
             self.db.release_pg(conn)
 
     def extract_entities(self, query: str) -> List[str]:
-        prompt = f"Extract key entities (nouns) from this query. Return as a comma-separated list: {query}"
+        prompt = f"""
+        Extract the most important specific entities (people, places, products, concepts) from the following query.
+        Return ONLY a comma-separated list of names. No extra text.
+        Query: {query}
+        """
         response = ollama.generate(model=self.llm_model, prompt=prompt)
-        entities = [e.strip() for e in response['response'].split(',')]
-        return entities
+        entities = [e.strip() for e in response['response'].split(',') if len(e.strip()) > 1]
+        return entities[:5] # Limit to top 5 entities for performance
 
     def graph_search(self, entities: List[str]) -> List[str]:
         driver = self.db.connect_neo4j()
         results = []
         with driver.session() as session:
             for entity in entities:
-                # 2-hop traversal to find deeper context and relationships
-                # Using toLower for better matching flexibility
+                # Use Full-Text search for true fuzzy matching
+                # The '~' character indicates fuzzy matching in Lucene syntax
                 query = """
-                MATCH (e:Entity)-[r*1..2]-(neighbor)
-                WHERE toLower(e.name) CONTAINS toLower($name)
-                RETURN DISTINCT e.name as s, type(r[0]) as p, neighbor.name as o
-                LIMIT 15
+                CALL db.index.fulltext.queryNodes("entity_names_index", $name + "~") 
+                YIELD node, score
+                MATCH (node)-[r*1..2]-(neighbor)
+                RETURN DISTINCT node.name as s, type(r[0]) as p, neighbor.name as o
+                LIMIT 10
                 """
                 res = session.run(query, name=entity)
                 for record in res:

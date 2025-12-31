@@ -89,10 +89,12 @@ class Database:
         with driver.session() as session:
             session.run("CREATE CONSTRAINT IF NOT EXISTS FOR (e:Entity) REQUIRE e.name IS UNIQUE")
             session.run("CREATE INDEX IF NOT EXISTS FOR (e:Entity) ON (e.type)")
+            # Add Full-Text index for fuzzy matching on entity names
+            session.run("CREATE FULLTEXT INDEX entity_names_index IF NOT EXISTS FOR (n:Entity) ON EACH [n.name]")
 
     def close(self):
-        if self.pg_conn:
-            self.pg_conn.close()
+        if Database._pg_pool:
+            Database._pg_pool.closeall()
         if self.neo4j_driver:
             self.neo4j_driver.close()
 
